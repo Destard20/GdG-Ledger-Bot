@@ -1,0 +1,9 @@
+# Configurazione macro per registrazione rapida spesa caffè
+command: "caffe"
+description: "Registra spesa caffè (1.20€ in contanti)"
+defaults:
+  date_time: "now"
+  method: "Contanti"
+  flow: "Uscita"
+  amount: 1.20
+  description: "Caffè"
