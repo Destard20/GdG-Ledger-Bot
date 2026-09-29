@@ -48,15 +48,30 @@ logger = logging.getLogger(__name__)
 ) = range(8)
 
 
-async def send_msg(update: Update, text: str, reply_markup=None):
-    """Helper per inviare o modificare un messaggio in base al tipo di update"""
+def get_user_mention(update: Update) -> str:
+    """Restituisce il tag esplicito dell'utente (username o menzione Telegram)"""
+    user = update.effective_user
+    if not user:
+        return ""
+    if user.username:
+        return f"👤 @{user.username}"
+    safe_name = (user.first_name or "Utente").replace("[", "").replace("]", "").replace("`", "")
+    return f"👤 [{safe_name}](tg://user?id={user.id})"
+
+
+async def send_msg(update: Update, text: str, reply_markup=None, tag_user: bool = True):
+    """Helper per inviare o modificare un messaggio in base al tipo di update con tag esplicito utente"""
     if update.callback_query:
         await update.callback_query.answer()
-        return await update.effective_chat.send_message(
-            text=text, reply_markup=reply_markup, parse_mode="Markdown"
-        )
+
+    user_tag = get_user_mention(update) if tag_user else ""
+    if user_tag and not text.startswith(user_tag):
+        formatted_text = f"{user_tag}\n{text}"
+    else:
+        formatted_text = text
+
     return await update.effective_chat.send_message(
-        text=text, reply_markup=reply_markup, parse_mode="Markdown"
+        text=formatted_text, reply_markup=reply_markup, parse_mode="Markdown"
     )
 async def advance_or_finish(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """

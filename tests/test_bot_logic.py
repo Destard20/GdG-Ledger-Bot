@@ -50,3 +50,28 @@ async def test_api_satispay_test_endpoint():
         assert data["status"] == "simulated"
         assert data["payment"]["amount_unit"] == 1250
         assert data["payment"]["sender_name"] == "Luigi"
+
+
+def test_get_user_mention():
+    from unittest.mock import MagicMock
+    from bot.conversation import get_user_mention
+
+    # Utente con username
+    update_with_username = MagicMock()
+    update_with_username.effective_user.username = "mario_rossi"
+    update_with_username.effective_user.first_name = "Mario"
+    update_with_username.effective_user.id = 111
+    assert get_user_mention(update_with_username) == "👤 @mario_rossi"
+
+    # Utente senza username
+    update_no_username = MagicMock()
+    update_no_username.effective_user.username = None
+    update_no_username.effective_user.first_name = "Luigi"
+    update_no_username.effective_user.id = 222
+    assert get_user_mention(update_no_username) == "👤 [Luigi](tg://user?id=222)"
+
+    # Nessun utente
+    update_none = MagicMock()
+    update_none.effective_user = None
+    assert get_user_mention(update_none) == ""
+
