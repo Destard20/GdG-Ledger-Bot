@@ -101,10 +101,22 @@ async def advance_or_finish(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
     # 4. Descrizione
     if "description" not in data:
+        prefix = context.user_data.get("desc_prefix")
+        suffix = context.user_data.get("desc_suffix")
+
+        extra_info = ""
+        info_lines = []
+        if prefix:
+            info_lines.append(f"• *Prefisso:* `{prefix}`")
+        if suffix:
+            info_lines.append(f"• *Suffisso:* `{suffix}`")
+        if info_lines:
+            extra_info = "\n\n💡 _Personalizzazioni comando:_\n" + "\n".join(info_lines)
+
         await send_msg(
             update,
             "📝 *Descrizione della transazione:*\n"
-            "Inserisci una breve descrizione della spesa o dell'entrata.",
+            f"Inserisci una breve descrizione della spesa o dell'entrata.{extra_info}",
             reply_markup=get_cancel_keyboard(),
         )
         return STATE_DESCRIPTION
@@ -261,8 +273,10 @@ def make_custom_command_starter(config: CustomCommandConfig):
             data["amount"] = float(defaults.amount)
 
         # Pre-compila o prepara descrizione
+        prefix = defaults.description_prefix or ""
+        suffix = defaults.description_suffix or ""
         if defaults.description:
-            data["description"] = defaults.description
+            data["description"] = f"{prefix}{defaults.description}{suffix}"
         if defaults.description_prefix:
             context.user_data["desc_prefix"] = defaults.description_prefix
         if defaults.description_suffix:

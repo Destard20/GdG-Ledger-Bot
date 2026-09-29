@@ -51,3 +51,23 @@ description: "Acquisto merenda"
         assert "help" in names
         assert "cancel" in names
         assert "merenda" in names
+
+
+def test_custom_command_prefix_suffix():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        file_path = Path(tmpdir) / "quota.yaml"
+        file_path.write_text(
+            """
+command: "quota"
+description: "Quota socio con prefisso"
+defaults:
+  description_prefix: "Quota: "
+  description_suffix: " [2026]"
+""",
+            encoding="utf-8"
+        )
+        cmds = load_custom_commands(tmpdir)
+        cfg = cmds["quota"]
+        assert cfg.defaults.description_prefix == "Quota: "
+        assert cfg.defaults.description_suffix == " [2026]"
+

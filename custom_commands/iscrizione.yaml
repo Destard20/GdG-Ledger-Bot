@@ -1,5 +1,5 @@
 # Configurazione macro per registrazione quota socio
-command: "iscrizione"
+command: "i"
 description: "Registra quota iscrizione socio (20.00€)"
 defaults:
   date_time: "now"
