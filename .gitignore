@@ -38,6 +38,10 @@ service_account.json
 *.swp
 *.swo
 
+# Binaries
+cloudflared
+
+
 # Testing & Coverage
 .pytest_cache/
 .coverage

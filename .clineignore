@@ -4,3 +4,5 @@ service_account.json
 *.pem
 .venv/
 __pycache__/
+cloudflared
+
