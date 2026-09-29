@@ -7,6 +7,7 @@ Telegram Bot professionale per la tenuta del registro contabile (Ledger), gestio
 ## ✨ Funzionalità Principali
 
 * **Sicurezza Chat Autorizzata**: Il bot risponde unicamente all'ID chat configurato nel file `.env`, ignorando ed isolando ogni comando proveniente da altre chat o utenti non autorizzati.
+* **Tag Esplicito dell'Utente nei Gruppi**: Il bot antepone a ogni domanda il tag diretto dell'utente (`👤 @username` o menzione diretta Telegram). In questo modo, anche se più membri interagiscono contemporaneamente nello stesso gruppo, è sempre evidente a colpo d'occhio chi deve rispondere.
 * **Procedura Guidata `/write` (shortcut `/w`)**:
   * Richiede sequenzialmente: Data e Ora, Metodo (Contanti o Satispay), Cassa iniziale (solo se contanti), Descrizione, Flusso (Entrata/Uscita), Importo, Cassa aggiornata (solo se contanti) e Numero ricevuta.
   * Interfaccia ottimizzata con **pulsanti interattivi (Inline Buttons)**:
@@ -18,6 +19,7 @@ Telegram Bot professionale per la tenuta del registro contabile (Ledger), gestio
   * Invia un riepilogo formattato in chat alla conclusione dell'inserimento.
 * **Archiviazione Cloud su Google Sheets**:
   * Struttura a colonne ordinata con autoincremento progressivo dell'ID transazione.
+  * Auto-sanitizzazione dell'ID: supporta sia l'ID pulito che l'URL completo di Google Drive.
   * Supporto a fogli multipli nella stessa cartella di lavoro (tab specificabile da `.env`).
   * Modalità Mock locale (`USE_MOCK_SHEETS=true`) per test immediati anche senza credenziali Google configurate.
 * **Integrazione Satispay Business**:
@@ -25,9 +27,13 @@ Telegram Bot professionale per la tenuta del registro contabile (Ledger), gestio
   * Associazione transazione: rispondi a un messaggio Satispay con `/link <id_transazione>` per salvare l'ID Satispay nella colonna del foglio.
   * Scollegamento: rispondi con `/unlink` (scollega da tutte le transazioni) o `/unlink <id_transazione>`.
 * **Macro e Comandi Personalizzati Dinamici**:
-  * Cartella dedicata `custom_commands/`: aggiungi file `.yaml` o `.json` per creare macro (es. `/caffe`, `/quota`).
+  * Cartella dedicata `custom_commands/`: aggiungi file `.yaml` per creare macro rapide (es. `/i`, `/bb`).
   * Registrazione automatica all'avvio nel menu dei comandi Telegram tramite `setMyCommands`.
-  * Supporto a valori predefiniti (`defaults`): data, metodo, flusso, importo fisso, prefissi o suffissi per la descrizione. I campi già impostati vengono saltati automaticamente durante la conversazione.
+  * Supporto a valori predefiniti (`defaults`): data, metodo, flusso, importo fisso, prefissi o suffissi per la causale con visualizzazione preventiva all'utente. I campi già impostati vengono saltati automaticamente.
+* **Logging di Sessione & Spegnimento Pulito**:
+  * Generazione automatica di file di log dedicati in `logs/` con timestamp di avvio (es. `logs/bot_YYYYMMDD_HHMMSS.log`).
+  * Tracciamento dettagliato su file e console di ogni operazione di scrittura sul foglio di calcolo.
+  * Chiusura aggraziata (graceful shutdown) tramite FastAPI lifespan senza errori su `Ctrl+C`.
 
 ---
 
@@ -47,15 +53,16 @@ GdG-Ledger-Bot/
 │   ├── sheets_service.py      # Servizio Google Sheets (gspread) e Mock locale
 │   └── satispay_service.py    # Client API Satispay con HTTP Signatures crittografiche
 ├── custom_commands/           # Cartella con le definizioni YAML dei comandi custom
-│   ├── caffe.yaml
-│   └── quota.yaml
+│   ├── iscrizione.yaml
+│   └── iscrizione_bayblade.yaml
+├── logs/                      # Cartella file di log di sessione (generata all'avvio)
 ├── tests/                     # Suite di test unitari con Pytest
 │   ├── conftest.py
 │   ├── test_bot_logic.py
 │   ├── test_custom_commands.py
 │   ├── test_satispay_service.py
 │   └── test_sheets_service.py
-├── .env.example               # Template variabili d'ambiente
+├── .env.example               # Template variabili d'ambiente (senza segreti)
 ├── .GEMINI.md                 # Guida dettagliata per ottenere credenziali API Google e Satispay
 ├── main.py                    # Entry point: avvia Telegram Bot e Webhook FastAPI
 ├── requirements.txt           # Dipendenze Python
@@ -127,7 +134,9 @@ defaults:
   description: "Pizza sociale"
 ```
 
-Al prossimo riavvio, il bot registrerà automaticamente `/pizza` su Telegram. Quando un utente digiterà `/pizza`, il bot salterà le domande per cui è già presente un default e chiederà unicamente la cassa iniziale/aggiornata e la ricevuta!
+È anche possibile omettere `description` e impostare un prefisso o suffisso (es. `description_prefix: "Iscrizione: "`), in modo che il bot chieda la causale all'utente mostrando l'anteprima e applicando automaticamente il prefisso!
+
+Al prossimo riavvio, il bot registrerà automaticamente i comandi su Telegram. Quando un utente digiterà la macro, il bot salterà le domande per cui è già presente un default e chiederà unicamente i dati mancanti!
 
 ---
 
