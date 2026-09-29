@@ -5,4 +5,6 @@ service_account.json
 .venv/
 __pycache__/
 cloudflared
+logs/
+
 

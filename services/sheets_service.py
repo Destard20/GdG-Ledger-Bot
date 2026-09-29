@@ -106,16 +106,26 @@ class MockSheetsService(SheetsServiceInterface):
         new_id = self.get_last_transaction_id(name) + 1
         transaction.id = new_id
         sheet.append(transaction.to_sheet_row())
-        logger.info(f"[MockSheets] Aggiunta transazione ID {new_id} al foglio {name}")
+        logger.info(
+            f"[MockSheets] Scrittura su foglio '{name}': Transazione ID #{new_id} registrata | "
+            f"Operatore: @{transaction.telegram_username} (ID: {transaction.telegram_user_id}) | "
+            f"Importo: {transaction.amount:.2f}€ | Metodo: {transaction.method} | "
+            f"Flusso: {transaction.flow} | Causale: '{transaction.description}'"
+        )
         return transaction
 
     def link_satispay_id(self, transaction_id: int, satispay_id: str, worksheet_name: Optional[str] = None) -> bool:
-        sheet = self._get_sheet_data(worksheet_name)
+        name = worksheet_name or settings.GOOGLE_WORKSHEET_NAME
+        sheet = self._get_sheet_data(name)
         for row in sheet[1:]:
             if len(row) > 0 and str(row[0]).strip() == str(transaction_id):
                 while len(row) <= 11:
                     row.append("")
                 row[11] = satispay_id
+                logger.info(
+                    f"[MockSheets] Scrittura su foglio '{name}': "
+                    f"Collegato Satispay ID '{satispay_id}' alla transazione #{transaction_id}"
+                )
                 return True
         return False
 
@@ -125,13 +135,19 @@ class MockSheetsService(SheetsServiceInterface):
         transaction_id: Optional[int] = None,
         worksheet_name: Optional[str] = None
     ) -> int:
-        sheet = self._get_sheet_data(worksheet_name)
+        name = worksheet_name or settings.GOOGLE_WORKSHEET_NAME
+        sheet = self._get_sheet_data(name)
         unlinked_count = 0
         for row in sheet[1:]:
             if len(row) > 11 and row[11] == satispay_id:
                 if transaction_id is None or str(row[0]).strip() == str(transaction_id):
                     row[11] = ""
                     unlinked_count += 1
+        target_info = f"dalla transazione #{transaction_id}" if transaction_id is not None else "da tutte le transazioni collegate"
+        logger.info(
+            f"[MockSheets] Scrittura su foglio '{name}': "
+            f"Scollegato Satispay ID '{satispay_id}' {target_info} (righe aggiornate: {unlinked_count})"
+        )
         return unlinked_count
 
     def get_transaction_by_id(self, transaction_id: int, worksheet_name: Optional[str] = None) -> Optional[Dict[str, Any]]:
@@ -230,7 +246,12 @@ class GoogleSheetsService(SheetsServiceInterface):
         new_id = self.get_last_transaction_id(worksheet_name) + 1
         transaction.id = new_id
         ws.append_row(transaction.to_sheet_row())
-        logger.info(f"Transazione #{new_id} registrata su Google Sheets")
+        logger.info(
+            f"[GoogleSheets] Scrittura su foglio '{ws.title}': Transazione ID #{new_id} registrata con successo | "
+            f"Operatore: @{transaction.telegram_username} (ID: {transaction.telegram_user_id}) | "
+            f"Importo: {transaction.amount:.2f}€ | Metodo: {transaction.method} | "
+            f"Flusso: {transaction.flow} | Causale: '{transaction.description}'"
+        )
         return transaction
 
     def link_satispay_id(self, transaction_id: int, satispay_id: str, worksheet_name: Optional[str] = None) -> bool:
@@ -246,8 +267,14 @@ class GoogleSheetsService(SheetsServiceInterface):
 
         if target_row is not None:
             ws.update_cell(target_row, 12, satispay_id)
-            logger.info(f"Riga {target_row} (ID #{transaction_id}) collegata a Satispay ID {satispay_id}")
+            logger.info(
+                f"[GoogleSheets] Scrittura su foglio '{ws.title}': "
+                f"Collegato Satispay ID '{satispay_id}' alla riga {target_row} (Transazione ID #{transaction_id})"
+            )
             return True
+        logger.warning(
+            f"[GoogleSheets] Tentativo collegamento fallito: Transazione ID #{transaction_id} non trovata nel foglio '{ws.title}'"
+        )
         return False
 
     def unlink_satispay_id(
@@ -270,7 +297,11 @@ class GoogleSheetsService(SheetsServiceInterface):
                     ws.update_cell(idx, 12, "")
                     unlinked_count += 1
 
-        logger.info(f"Scollegate {unlinked_count} occorrenze di Satispay ID {satispay_id}")
+        target_info = f"dalla transazione #{transaction_id}" if transaction_id is not None else "da tutte le transazioni collegate"
+        logger.info(
+            f"[GoogleSheets] Scrittura su foglio '{ws.title}': "
+            f"Scollegato Satispay ID '{satispay_id}' {target_info} (righe modificate: {unlinked_count})"
+        )
         return unlinked_count
 
     def get_transaction_by_id(self, transaction_id: int, worksheet_name: Optional[str] = None) -> Optional[Dict[str, Any]]:

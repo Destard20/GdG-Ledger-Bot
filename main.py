@@ -1,5 +1,8 @@
 import asyncio
 import logging
+import os
+from datetime import datetime
+from pathlib import Path
 from typing import Dict, Any, Optional
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, Header, HTTPException, Query, BackgroundTasks
@@ -14,12 +17,22 @@ from bot.custom_commands import load_custom_commands, build_bot_commands_list
 from bot.conversation import build_conversation_handler
 from bot.handlers import start_handler, help_handler, link_handler, unlink_handler, error_handler
 
-# Configurazione del logger
+# Creazione cartella logs e generazione file di log con data e ora di avvio
+logs_dir = Path("logs")
+logs_dir.mkdir(parents=True, exist_ok=True)
+log_filename = logs_dir / f"bot_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+
+# Configurazione del logger per scrivere sia su file che su console
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.INFO
+    level=logging.INFO,
+    handlers=[
+        logging.FileHandler(str(log_filename), encoding="utf-8"),
+        logging.StreamHandler(),
+    ],
 )
 logger = logging.getLogger("GdG-Ledger-Bot")
+logger.info(f"Logging inizializzato. File di log della sessione: {log_filename}")
 
 # Disabilita i log prolissi di httpx e httpcore (evita spam di richieste continue per getUpdates)
 logging.getLogger("httpx").setLevel(logging.WARNING)

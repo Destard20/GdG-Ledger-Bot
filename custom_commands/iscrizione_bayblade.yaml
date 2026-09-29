@@ -1,0 +1,7 @@
+command: "bb"
+description: "Registra quota iscrizione socio giocatore bayblade"
+defaults:
+  date_time: "now"
+  flow: "Entrata"
+  amount: 20.00
+  description_prefix: "Iscrizione (bb): "

@@ -97,6 +97,10 @@ async def link_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     tx_id = int(context.args[0])
+    user = update.effective_user
+    username = user.username or user.first_name if user else "Anonimo"
+    user_id = user.id if user else 0
+    logger.info(f"Utente @{username} (ID: {user_id}) ha richiesto collegamento transazione #{tx_id} a Satispay ID: {satispay_id}")
     sheets = get_sheets_service()
 
     success = sheets.link_satispay_id(tx_id, satispay_id)
@@ -138,6 +142,12 @@ async def unlink_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     tx_id: Optional[int] = None
     if context.args and context.args[0].isdigit():
         tx_id = int(context.args[0])
+
+    user = update.effective_user
+    username = user.username or user.first_name if user else "Anonimo"
+    user_id = user.id if user else 0
+    target_descr = f"transazione #{tx_id}" if tx_id is not None else "tutte le transazioni"
+    logger.info(f"Utente @{username} (ID: {user_id}) ha richiesto scollegamento Satispay ID: {satispay_id} da {target_descr}")
 
     sheets = get_sheets_service()
     count = sheets.unlink_satispay_id(satispay_id, transaction_id=tx_id)
