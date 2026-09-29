@@ -21,6 +21,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger("GdG-Ledger-Bot")
 
+# Disabilita i log prolissi di httpx e httpcore (evita spam di richieste continue per getUpdates)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+
 # Applicazione Telegram globale
 telegram_app = None
 
@@ -63,10 +67,83 @@ async def send_satispay_echo(payment: SatispayPayment):
         logger.error(f"Errore durante l'invio della notifica Satispay su Telegram: {e}")
 
 
+def create_telegram_app():
+    """
+    Inizializza l'applicazione Telegram con tutti gli handler registrati
+    """
+    custom_cmds = load_custom_commands()
+    logger.info(f"Comandi personalizzati caricati: {list(custom_cmds.keys())}")
+
+    app = ApplicationBuilder().token(settings.TELEGRAM_BOT_TOKEN).build()
+    app.bot_data["custom_commands"] = custom_cmds
+
+    # Registra il ConversationHandler principale (/write, /w e custom commands)
+    conv_handler = build_conversation_handler(custom_cmds)
+    app.add_handler(conv_handler)
+
+    # Registra handler comandi base
+    app.add_handler(CommandHandler("start", start_handler))
+    app.add_handler(CommandHandler("help", help_handler))
+    app.add_handler(CommandHandler("link", link_handler))
+    app.add_handler(CommandHandler("unlink", unlink_handler))
+
+    # Handler errori
+    app.add_error_handler(error_handler)
+
+    return app, custom_cmds
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """
+    Gestore del ciclo di vita: avvia e arresta in modo pulito il bot Telegram assieme a FastAPI
+    """
+    global telegram_app
+
+    # Assicura intestazioni sul foglio Google Sheets
+    sheets = get_sheets_service()
+    try:
+        sheets.ensure_headers()
+        logger.info("Foglio di calcolo verificato.")
+    except Exception as e:
+        logger.warning(f"Impossibile verificare intestazioni Google Sheets: {e}")
+
+    telegram_app, custom_cmds = create_telegram_app()
+
+    logger.info("Avvio bot Telegram...")
+    await telegram_app.initialize()
+    await telegram_app.start()
+
+    # Registra i comandi su Telegram per l'autocompletamento
+    try:
+        bot_commands = build_bot_commands_list(custom_cmds)
+        await telegram_app.bot.set_my_commands(bot_commands)
+        logger.info("Comandi registrati con successo con Telegram setMyCommands.")
+    except Exception as e:
+        logger.warning(f"Impossibile registrare setMyCommands su Telegram: {e}")
+
+    await telegram_app.updater.start_polling()
+    logger.info(f"Bot pronto e in ascolto. Webhook server su http://{settings.WEBHOOK_HOST}:{settings.WEBHOOK_PORT}")
+
+    yield
+
+    logger.info("Chiusura in corso...")
+    try:
+        if telegram_app and telegram_app.updater and telegram_app.updater.running:
+            await telegram_app.updater.stop()
+        if telegram_app and telegram_app.running:
+            await telegram_app.stop()
+        if telegram_app:
+            await telegram_app.shutdown()
+        logger.info("Bot Telegram arrestato correttamente.")
+    except Exception as e:
+        logger.warning(f"Errore durante l'arresto del bot: {e}")
+
+
 # ==========================================
 # Inizializzazione FastAPI Webhook Server
 # ==========================================
-api_app = FastAPI(title="GdG-Ledger-Bot Satispay Webhook Server")
+api_app = FastAPI(title="GdG-Ledger-Bot Satispay Webhook Server", lifespan=lifespan)
 
 
 @api_app.get("/health")
@@ -137,85 +214,19 @@ async def satispay_test_webhook(background_tasks: BackgroundTasks, amount: float
     return {"status": "simulated", "payment": payment}
 
 
-def create_telegram_app():
-    """
-    Inizializza l'applicazione Telegram con tutti gli handler registrati
-    """
-    custom_cmds = load_custom_commands()
-    logger.info(f"Comandi personalizzati caricati: {list(custom_cmds.keys())}")
-
-    app = ApplicationBuilder().token(settings.TELEGRAM_BOT_TOKEN).build()
-    app.bot_data["custom_commands"] = custom_cmds
-
-    # Registra il ConversationHandler principale (/write, /w e custom commands)
-    conv_handler = build_conversation_handler(custom_cmds)
-    app.add_handler(conv_handler)
-
-    # Registra handler comandi base
-    app.add_handler(CommandHandler("start", start_handler))
-    app.add_handler(CommandHandler("help", help_handler))
-    app.add_handler(CommandHandler("link", link_handler))
-    app.add_handler(CommandHandler("unlink", unlink_handler))
-
-    # Handler errori
-    app.add_error_handler(error_handler)
-
-    return app, custom_cmds
-
-
-async def run_services():
-    """
-    Avvia contemporaneamente il Telegram Bot (polling) e il server FastAPI (uvicorn)
-    """
-    global telegram_app
-
-    # Assicura intestazioni sul foglio
-    sheets = get_sheets_service()
-    try:
-        sheets.ensure_headers()
-        logger.info("Foglio di calcolo verificato.")
-    except Exception as e:
-        logger.warning(f"Impossibile verificare intestazioni Google Sheets: {e}")
-
-    telegram_app, custom_cmds = create_telegram_app()
-
-    # Configurazione server Webhook
-    server_config = uvicorn.Config(
-        app=api_app,
-        host=settings.WEBHOOK_HOST,
-        port=settings.WEBHOOK_PORT,
-        log_level="info"
-    )
-    server = uvicorn.Server(server_config)
-
-    logger.info("Avvio bot Telegram e server Webhook...")
-    async with telegram_app:
-        await telegram_app.start()
-
-        # Registra i comandi su Telegram per l'autocompletamento
-        try:
-            bot_commands = build_bot_commands_list(custom_cmds)
-            await telegram_app.bot.set_my_commands(bot_commands)
-            logger.info("Comandi registrati con successo con Telegram setMyCommands.")
-        except Exception as e:
-            logger.warning(f"Impossibile registrare setMyCommands su Telegram: {e}")
-
-        await telegram_app.updater.start_polling()
-        logger.info(f"Bot pronto e in ascolto. Webhook server su http://{settings.WEBHOOK_HOST}:{settings.WEBHOOK_PORT}")
-
-        try:
-            await server.serve()
-        finally:
-            logger.info("Chiusura in corso...")
-            await telegram_app.updater.stop()
-            await telegram_app.stop()
-
-
 def main():
+    """
+    Punto di ingresso principale: esegue Uvicorn che gestisce il lifespan (avvio e arresto pulito del Bot)
+    """
     try:
-        asyncio.run(run_services())
+        uvicorn.run(
+            "main:api_app",
+            host=settings.WEBHOOK_HOST,
+            port=settings.WEBHOOK_PORT,
+            log_level="info"
+        )
     except (KeyboardInterrupt, SystemExit):
-        logger.info("Bot arrestato dall'utente.")
+        logger.info("Applicazione arrestata.")
 
 
 if __name__ == "__main__":

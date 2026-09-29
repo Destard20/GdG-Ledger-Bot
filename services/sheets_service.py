@@ -163,9 +163,17 @@ class GoogleSheetsService(SheetsServiceInterface):
         self.client = self.gspread.service_account(filename=str(settings.google_credentials_path))
         logger.info("Client Google Sheets autenticato con successo")
 
+    @staticmethod
+    def _clean_spreadsheet_id(raw_id: str) -> str:
+        raw_id = raw_id.strip()
+        if "docs.google.com/spreadsheets/d/" in raw_id:
+            return raw_id.split("/d/")[1].split("/")[0]
+        return raw_id
+
     def _get_worksheet(self, worksheet_name: Optional[str] = None):
         name = worksheet_name or settings.GOOGLE_WORKSHEET_NAME
-        spreadsheet = self.client.open_by_key(settings.GOOGLE_SPREADSHEET_ID)
+        spreadsheet_id = self._clean_spreadsheet_id(settings.GOOGLE_SPREADSHEET_ID)
+        spreadsheet = self.client.open_by_key(spreadsheet_id)
         try:
             return spreadsheet.worksheet(name)
         except self.gspread.exceptions.WorksheetNotFound:

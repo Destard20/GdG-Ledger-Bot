@@ -1,9 +1,8 @@
 # Configurazione macro per registrazione quota socio
-command: "quota"
-description: "Registra quota iscrizione socio (25.00€ Satispay)"
+command: "iscrizione"
+description: "Registra quota iscrizione socio (20.00€)"
 defaults:
   date_time: "now"
-  method: "Satispay"
   flow: "Entrata"
-  amount: 25.00
-  description_prefix: "Quota iscrizione socio: "
+  amount: 20.00
+  description_prefix: "Iscrizione: "
