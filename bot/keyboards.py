@@ -11,6 +11,9 @@ CALLBACK_BOX_CONFIRM_CALCULATED = "box:confirm_calculated"
 CALLBACK_RECEIPT_USE_SUGGESTED = "receipt:use_suggested"
 CALLBACK_RECEIPT_NONE = "receipt:none"
 CALLBACK_CANCEL = "action:cancel"
+CALLBACK_QR_GENERATE = "qr:generate"
+CALLBACK_QR_SKIP = "qr:skip"
+
 
 
 def get_now_keyboard() -> InlineKeyboardMarkup:
@@ -80,3 +83,23 @@ def get_cancel_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton("❌ Annulla", callback_data=CALLBACK_CANCEL)]
     ]
     return InlineKeyboardMarkup(buttons)
+
+
+def get_qr_ask_keyboard() -> InlineKeyboardMarkup:
+    """Tastiera per chiedere se generare il QR Code Satispay"""
+    buttons = [
+        [InlineKeyboardButton("📱 Genera QR Code", callback_data=CALLBACK_QR_GENERATE)],
+        [InlineKeyboardButton("⏩ Salta e registra subito", callback_data=CALLBACK_QR_SKIP)],
+        [InlineKeyboardButton("❌ Annulla operazione", callback_data=CALLBACK_CANCEL)]
+    ]
+    return InlineKeyboardMarkup(buttons)
+
+
+def get_qr_waiting_keyboard() -> InlineKeyboardMarkup:
+    """Tastiera durante l'attesa del pagamento del QR Code"""
+    buttons = [
+        [InlineKeyboardButton("⏩ Salta pagamento e registra", callback_data=CALLBACK_QR_SKIP)],
+        [InlineKeyboardButton("❌ Annulla operazione", callback_data=CALLBACK_CANCEL)]
+    ]
+    return InlineKeyboardMarkup(buttons)
+

@@ -84,3 +84,14 @@ async def test_poll_new_payments_behavior(monkeypatch):
         assert third_run_new[0].id == "sat_3"
         assert test_db.has_payment("sat_3") is True
 
+
+
+def test_generate_qr_code_image():
+    service = SatispayService()
+    buf = service.generate_qr_code_image("https://online.satispay.com/pay/test-uuid")
+    assert buf is not None
+    data = buf.getvalue()
+    assert len(data) > 0
+    # Verifica intestazione PNG standard
+    assert data[:8] == b"\x89PNG\r\n\x1a\n"
+

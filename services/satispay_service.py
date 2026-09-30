@@ -121,6 +121,70 @@ class SatispayService:
             logger.error(f"Eccezione durante chiamata Satispay: {e}")
             return None
 
+    async def create_payment(self, amount_unit: int, description: str = "") -> Optional[Dict[str, Any]]:
+        """
+        Crea una richiesta di pagamento su Satispay (POST /g_business/v1/payments).
+        Restituisce un dizionario contenente id, redirect_url, status ('PENDING'), ecc.
+        """
+        path = "/g_business/v1/payments"
+        payload = {
+            "flow": "MATCH_CODE",
+            "amount_unit": amount_unit,
+            "currency": "EUR"
+        }
+        if description:
+            payload["comment"] = description[:250]
+
+        body = json.dumps(payload).encode("utf-8")
+        headers = {
+            "Accept": "application/json",
+            "Content-Type": "application/json"
+        }
+
+        if self.private_key and self.key_id:
+            auth_headers = self.generate_auth_header("POST", path, body)
+            headers.update(auth_headers)
+        else:
+            logger.error("Impossibile creare pagamento Satispay: credenziali assenti.")
+            return None
+
+        url = f"{self.base_url}{path}"
+        try:
+            async with httpx.AsyncClient() as client:
+                res = await client.post(url, headers=headers, content=body, timeout=12.0)
+                if res.status_code in (200, 201):
+                    return res.json()
+                else:
+                    logger.error(f"Errore creazione pagamento Satispay ({res.status_code}): {res.text}")
+                    return None
+        except Exception as e:
+            logger.error(f"Eccezione durante creazione pagamento Satispay: {e}")
+            return None
+
+    @staticmethod
+    def generate_qr_code_image(data_to_encode: str):
+        """
+        Genera un'immagine PNG in memoria contenente il codice QR della stringa o URL passato
+        """
+        import io
+        import qrcode
+
+        qr = qrcode.QRCode(
+            version=1,
+            error_correction=qrcode.constants.ERROR_CORRECT_M,
+            box_size=10,
+            border=2,
+        )
+        qr.add_data(data_to_encode)
+        qr.make(fit=True)
+        img = qr.make_image(fill_color="black", back_color="white")
+
+        buffer = io.BytesIO()
+        img.save(buffer, format="PNG")
+        buffer.seek(0)
+        return buffer
+
+
     async def get_payments_history(self, limit: int = 50) -> List[SatispayPayment]:
         """
         Recupera la lista degli ultimi pagamenti dalle API di Satispay

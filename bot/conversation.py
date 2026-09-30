@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from datetime import datetime
 from typing import Optional, Dict, Any
@@ -13,6 +14,8 @@ from telegram.ext import (
 from core.models import Transaction, CustomCommandConfig
 from core.security import is_chat_allowed
 from services.sheets_service import get_sheets_service
+from services.satispay_service import satispay_service
+from services.db_service import db_service
 from bot.keyboards import (
     get_now_keyboard,
     get_method_keyboard,
@@ -21,6 +24,8 @@ from bot.keyboards import (
     get_box_updated_keyboard,
     get_receipt_keyboard,
     get_cancel_keyboard,
+    get_qr_ask_keyboard,
+    get_qr_waiting_keyboard,
     CALLBACK_NOW,
     CALLBACK_METHOD_CASH,
     CALLBACK_METHOD_SATISPAY,
@@ -31,9 +36,14 @@ from bot.keyboards import (
     CALLBACK_RECEIPT_USE_SUGGESTED,
     CALLBACK_RECEIPT_NONE,
     CALLBACK_CANCEL,
+    CALLBACK_QR_GENERATE,
+    CALLBACK_QR_SKIP,
 )
 
 logger = logging.getLogger(__name__)
+
+# Riferimento globale per permettere la chiusura pulita dal task asincrono del QR
+active_conv_handler = None
 
 # Stati del ConversationHandler
 (
@@ -45,7 +55,9 @@ logger = logging.getLogger(__name__)
     STATE_AMOUNT,
     STATE_BOX_AFTER,
     STATE_RECEIPT,
-) = range(8)
+    STATE_QR_ASK,
+    STATE_QR_WAITING,
+) = range(10)
 
 
 def get_user_mention(update: Update) -> str:
@@ -189,9 +201,33 @@ async def advance_or_finish(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         )
         return STATE_RECEIPT
 
-    # ========================================================
-    # Tutti i dati sono completi: Registrazione finale
-    # ========================================================
+    # 9. Se Metodo è Satispay ed è un'Entrata (+), chiedi se si vuole generare un QR Code Satispay POS
+    if (
+        data.get("method") == "Satispay"
+        and data.get("flow") == "Entrata"
+        and "qr_choice_done" not in data
+    ):
+        amount = data.get("amount", 0.0)
+        await send_msg(
+            update,
+            f"📱 *Pagamento Satispay POS*\n"
+            f"Vuoi generare un QR Code per far pagare all'istante l'importo di *{amount:.2f} €*?\n\n"
+            f"• Se premi *📱 Genera QR Code*, verrà mostrato il codice QR e la transazione verrà registrata e collegata in automatico a pagamento avvenuto.\n"
+            f"• Se premi *⏩ Salta e registra subito*, la transazione verrà registrata subito nel foglio senza attendere il pagamento.",
+            reply_markup=get_qr_ask_keyboard(),
+        )
+        return STATE_QR_ASK
+
+    return await finalize_and_save_transaction(update, context)
+
+
+async def finalize_and_save_transaction(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Registra la transazione sul foglio di calcolo, invia il messaggio di riepilogo e chiude la conversazione"""
+    data = context.user_data.get("tx_data", {})
+    if not data or "date_time" not in data:
+        return ConversationHandler.END
+
+    sheets = get_sheets_service()
     user = update.effective_user
     username = user.username or user.full_name or "Anonimo"
     user_id = user.id
@@ -204,7 +240,7 @@ async def advance_or_finish(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         flow=data["flow"],
         amount=data["amount"],
         box_money_updated=data.get("box_money_updated"),
-        receipt_number=data["receipt_number"],
+        receipt_number=data.get("receipt_number", 0),
         telegram_username=username,
         telegram_user_id=user_id,
         satispay_id=data.get("satispay_id"),
@@ -228,6 +264,10 @@ async def advance_or_finish(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         b_upd = f"{registered_tx.box_money_updated:.2f} €" if registered_tx.box_money_updated is not None else "-"
         box_info = f"🪙 *Cassa iniziale:* `{b_init}`\n🪙 *Cassa aggiornata:* `{b_upd}`\n"
 
+    sat_info = ""
+    if registered_tx.satispay_id:
+        sat_info = f"📱 *ID Satispay Collegato:* `{registered_tx.satispay_id}`\n"
+
     flow_emoji = "➕" if registered_tx.flow == "Entrata" else "➖"
     method_emoji = "💵" if registered_tx.method == "Contanti" else "📱"
 
@@ -240,11 +280,19 @@ async def advance_or_finish(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         f"{flow_emoji} *Flusso:* `{registered_tx.flow}`\n"
         f"💰 *Importo:* `{registered_tx.amount:.2f} €`\n"
         f"{box_info}"
+        f"{sat_info}"
         f"🧾 *Ricevuta:* `#{registered_tx.receipt_number}`\n"
         f"👤 *Registrato da:* @{registered_tx.telegram_username} (`{registered_tx.telegram_user_id}`)"
     )
 
     await send_msg(update, summary)
+
+    # Chiusura forzata dello stato nel conversation handler
+    chat_id = update.effective_chat.id if update.effective_chat else 0
+    key = (chat_id, user_id)
+    if active_conv_handler and key in active_conv_handler._conversations:
+        active_conv_handler._update_state(ConversationHandler.END, key)
+
     context.user_data.clear()
     return ConversationHandler.END
 
@@ -499,6 +547,181 @@ async def handle_receipt_input(update: Update, context: ContextTypes.DEFAULT_TYP
         return STATE_RECEIPT
 
 
+async def handle_qr_ask_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Gestisce la scelta se generare o saltare il QR Code Satispay"""
+    data = context.user_data.setdefault("tx_data", {})
+
+    if update.callback_query:
+        query_data = update.callback_query.data
+        if query_data == CALLBACK_CANCEL:
+            return await handle_cancel(update, context)
+        if query_data == CALLBACK_QR_SKIP:
+            data["qr_choice_done"] = True
+            return await advance_or_finish(update, context)
+        if query_data == CALLBACK_QR_GENERATE:
+            return await start_qr_payment_flow(update, context)
+
+    text = update.message.text.strip().lower() if update.message else ""
+    if text == "/cancel":
+        return await handle_cancel(update, context)
+    if "salta" in text or "skip" in text or "no" in text:
+        data["qr_choice_done"] = True
+        return await advance_or_finish(update, context)
+    if "qr" in text or "genera" in text or "si" in text or "sì" in text:
+        return await start_qr_payment_flow(update, context)
+
+    await send_msg(
+        update,
+        "⚠️ Scegli un'opzione: premi *📱 Genera QR Code* oppure *⏩ Salta e registra subito*.",
+        reply_markup=get_qr_ask_keyboard()
+    )
+    return STATE_QR_ASK
+
+
+async def start_qr_payment_flow(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Crea la richiesta di pagamento su Satispay, genera il QR Code e avvia l'attesa del pagamento"""
+    data = context.user_data.setdefault("tx_data", {})
+    data["qr_choice_done"] = True
+
+    amount = data.get("amount", 0.0)
+    amount_unit = int(round(amount * 100))
+    desc = data.get("description", "Pagamento Ledger Bot")
+
+    await send_msg(update, "⏳ _Contatto Satispay per generare il codice QR dinamico..._")
+
+    payment_res = await satispay_service.create_payment(amount_unit, description=desc)
+    if not payment_res or not payment_res.get("id"):
+        await send_msg(
+            update,
+            "⚠️ *Impossibile generare il QR Code Satispay.* Registro la transazione normalmente sul foglio...",
+        )
+        return await advance_or_finish(update, context)
+
+    payment_id = payment_res["id"]
+    redirect_url = payment_res.get("redirect_url") or f"https://online.satispay.com/pay/{payment_id}"
+    context.user_data["pending_payment_id"] = payment_id
+
+    # Genera l'immagine QR
+    qr_buffer = satispay_service.generate_qr_code_image(redirect_url)
+
+    caption = (
+        f"{get_user_mention(update)}\n"
+        f"📲 *Inquadra con l'app Satispay per pagare {amount:.2f} €!*\n\n"
+        f"🆔 *ID Satispay:* `{payment_id}`\n"
+        f"⏳ _In attesa che il cliente autorizzi il pagamento sull'app..._\n\n"
+        f"💡 La transazione verrà registrata e collegata in automatico a pagamento avvenuto.\n"
+        f"Se ci sono problemi, puoi premere *⏩ Salta pagamento e registra*."
+    )
+
+    await update.effective_chat.send_photo(
+        photo=qr_buffer,
+        caption=caption,
+        parse_mode="Markdown",
+        reply_markup=get_qr_waiting_keyboard()
+    )
+
+    chat_id = update.effective_chat.id
+    user_id = update.effective_user.id
+    asyncio.create_task(
+        wait_for_qr_payment(
+            chat_id=chat_id,
+            user_id=user_id,
+            payment_id=payment_id,
+            amount=amount,
+            context=context,
+            update=update
+        )
+    )
+    return STATE_QR_WAITING
+
+
+async def wait_for_qr_payment(
+    chat_id: int,
+    user_id: int,
+    payment_id: str,
+    amount: float,
+    context: ContextTypes.DEFAULT_TYPE,
+    update: Update
+):
+    """
+    Loop di attesa asincrono: controlla ogni 3 secondi se il pagamento QR Code è stato autorizzato
+    """
+    for _ in range(60):  # Massimo 3 minuti (60 * 3s)
+        await asyncio.sleep(3)
+
+        # Se l'utente ha interrotto manualmente
+        if context.user_data.get("qr_cancelled") or context.user_data.get("qr_skipped"):
+            logger.info(f"Attesa QR Satispay {payment_id} interrotta dall'utente.")
+            return
+
+        try:
+            payment = await satispay_service.get_payment(payment_id)
+            if payment and payment.status == "ACCEPTED":
+                logger.info(f"Pagamento QR Satispay {payment_id} ACCETTATO con successo!")
+                context.user_data.setdefault("tx_data", {})["satispay_id"] = payment_id
+                # Salva in SQLite per evitare duplicati col polling generale
+                db_service.save_payment(payment)
+
+                sender_str = f" da *{payment.sender_name}*" if payment.sender_name else ""
+                await context.bot.send_message(
+                    chat_id=chat_id,
+                    text=f"✅ *Pagamento Satispay di {amount:.2f} € ricevuto con successo{sender_str}!*",
+                    parse_mode="Markdown"
+                )
+                await finalize_and_save_transaction(update, context)
+                return
+            elif payment and payment.status in ("CANCELED", "EXPIRED"):
+                logger.info(f"Pagamento QR Satispay {payment_id} terminato con esito: {payment.status}")
+                await context.bot.send_message(
+                    chat_id=chat_id,
+                    text=f"⚠️ *Il pagamento Satispay è risultato: {payment.status}.* Procedo con la registrazione della transazione sul foglio...",
+                    parse_mode="Markdown"
+                )
+                await finalize_and_save_transaction(update, context)
+                return
+        except Exception as e:
+            logger.error(f"Errore durante verifica stato QR {payment_id}: {e}")
+
+    # Timeout di 3 minuti
+    if not context.user_data.get("qr_cancelled") and not context.user_data.get("qr_skipped"):
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text="⏳ *Tempo scaduto per il pagamento del QR Code.* Procedo con la registrazione sul foglio senza collegamento automatico...",
+            parse_mode="Markdown"
+        )
+        await finalize_and_save_transaction(update, context)
+
+
+async def handle_qr_waiting_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Gestisce l'input durante l'attesa del pagamento QR Code (salta o annulla)"""
+    if update.callback_query:
+        query_data = update.callback_query.data
+        if query_data == CALLBACK_CANCEL:
+            context.user_data["qr_cancelled"] = True
+            return await handle_cancel(update, context)
+        if query_data == CALLBACK_QR_SKIP:
+            context.user_data["qr_skipped"] = True
+            await send_msg(update, "⏩ *Pagamento QR saltato.* Registro subito la transazione sul foglio...")
+            return await finalize_and_save_transaction(update, context)
+
+    text = update.message.text.strip().lower() if update.message else ""
+    if text == "/cancel":
+        context.user_data["qr_cancelled"] = True
+        return await handle_cancel(update, context)
+    if "salta" in text or "skip" in text:
+        context.user_data["qr_skipped"] = True
+        await send_msg(update, "⏩ *Pagamento QR saltato.* Registro subito la transazione sul foglio...")
+        return await finalize_and_save_transaction(update, context)
+
+    await send_msg(
+        update,
+        "⏳ *In attesa del pagamento tramite app Satispay...*\n"
+        "Premi *⏩ Salta pagamento e registra* per procedere subito o *❌ Annulla operazione* per terminare.",
+        reply_markup=get_qr_waiting_keyboard()
+    )
+    return STATE_QR_WAITING
+
+
 async def handle_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Annulla l'operazione in corso e azzera lo stato"""
     context.user_data.clear()
@@ -551,6 +774,14 @@ def build_conversation_handler(custom_commands: Optional[Dict[str, CustomCommand
             CallbackQueryHandler(handle_receipt_input),
             MessageHandler(filters.TEXT & ~filters.COMMAND, handle_receipt_input),
         ],
+        STATE_QR_ASK: [
+            CallbackQueryHandler(handle_qr_ask_input),
+            MessageHandler(filters.TEXT & ~filters.COMMAND, handle_qr_ask_input),
+        ],
+        STATE_QR_WAITING: [
+            CallbackQueryHandler(handle_qr_waiting_input),
+            MessageHandler(filters.TEXT & ~filters.COMMAND, handle_qr_waiting_input),
+        ],
     }
 
     fallbacks = [
@@ -558,10 +789,12 @@ def build_conversation_handler(custom_commands: Optional[Dict[str, CustomCommand
         CallbackQueryHandler(handle_cancel, pattern=f"^{CALLBACK_CANCEL}$"),
     ]
 
-    return ConversationHandler(
+    global active_conv_handler
+    active_conv_handler = ConversationHandler(
         entry_points=entry_points,
         states=states,
         fallbacks=fallbacks,
         per_message=False,
     )
+    return active_conv_handler
 

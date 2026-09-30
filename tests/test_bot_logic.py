@@ -120,3 +120,16 @@ def test_get_user_mention():
     assert get_user_mention(update_none) == ""
 
 
+def test_qr_keyboards():
+    from bot.keyboards import get_qr_ask_keyboard, get_qr_waiting_keyboard, CALLBACK_QR_GENERATE, CALLBACK_QR_SKIP
+
+    ask_kb = get_qr_ask_keyboard()
+    callbacks = [btn.callback_data for row in ask_kb.inline_keyboard for btn in row]
+    assert CALLBACK_QR_GENERATE in callbacks
+    assert CALLBACK_QR_SKIP in callbacks
+
+    wait_kb = get_qr_waiting_keyboard()
+    wait_callbacks = [btn.callback_data for row in wait_kb.inline_keyboard for btn in row]
+    assert CALLBACK_QR_SKIP in wait_callbacks
+
+

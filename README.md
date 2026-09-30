@@ -32,6 +32,11 @@ Telegram Bot professionale per la tenuta del registro contabile (Ledger), gestio
   * **Associazione e Scollegamento**:
     * `/link <id_transazione>`: rispondi a un messaggio Satispay per associare l'ID Satispay alla riga corrispondente nel foglio di calcolo.
     * `/unlink`: rispondi per rimuovere l'ID Satispay da tutte le righe del foglio (o `/unlink <id_transazione>`).
+* **POS Virtuale con QR Code Dinamico**:
+  * Se il metodo scelto è **Satispay** ed è un'**Entrata (+)**, prima di chiudere la transazione il bot chiede se si vuole generare un QR Code Satispay.
+  * Invia l'immagine del codice QR con l'importo esatto: quando il cliente autorizza il pagamento sull'app, il bot lo rileva in tempo reale, completa la transazione e associa l'ID Satispay su Google Sheets in automatico!
+  * È sempre disponibile il pulsante per saltare l'attesa del pagamento e procedere comunque con la registrazione manuale sul foglio.
+
 * **Macro e Comandi Personalizzati Dinamici**:
   * Cartella dedicata `custom_commands/`: aggiungi file `.yaml` per creare macro rapide (es. `/i`, `/bb`).
   * Registrazione automatica all'avvio nel menu dei comandi Telegram tramite `setMyCommands`.
