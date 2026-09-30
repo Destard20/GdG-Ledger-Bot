@@ -74,7 +74,10 @@ def get_user_mention(update: Update) -> str:
 async def send_msg(update: Update, text: str, reply_markup=None, tag_user: bool = True):
     """Helper per inviare o modificare un messaggio in base al tipo di update con tag esplicito utente"""
     if update.callback_query:
-        await update.callback_query.answer()
+        try:
+            await update.callback_query.answer()
+        except Exception as e:
+            logger.debug(f"Impossibile rispondere alla callback query (forse scaduta): {e}")
 
     user_tag = get_user_mention(update) if tag_user else ""
     if user_tag and not text.startswith(user_tag):
@@ -223,6 +226,10 @@ async def advance_or_finish(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
 async def finalize_and_save_transaction(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Registra la transazione sul foglio di calcolo, invia il messaggio di riepilogo e chiude la conversazione"""
+    if context.user_data.get("is_finalized"):
+        return ConversationHandler.END
+    context.user_data["is_finalized"] = True
+
     data = context.user_data.get("tx_data", {})
     if not data or "date_time" not in data:
         return ConversationHandler.END
@@ -585,7 +592,12 @@ async def start_qr_payment_flow(update: Update, context: ContextTypes.DEFAULT_TY
 
     amount = data.get("amount", 0.0)
     amount_unit = int(round(amount * 100))
-    desc = data.get("description", "Pagamento Ledger Bot")
+
+    # Nota per la transazione Satispay: Descrizione + Numero Ricevuta (o '-' se assente)
+    base_desc = (data.get("description") or "Transazione").strip()
+    receipt_num = data.get("receipt_number", 0)
+    receipt_str = str(receipt_num) if receipt_num and receipt_num > 0 else "-"
+    desc = f"{base_desc} - {receipt_str}"
 
     await send_msg(update, "⏳ _Contatto Satispay per generare il codice QR dinamico..._")
 
@@ -668,7 +680,10 @@ async def wait_for_qr_payment(
                     text=f"✅ *Pagamento Satispay di {amount:.2f} € ricevuto con successo{sender_str}!*",
                     parse_mode="Markdown"
                 )
-                await finalize_and_save_transaction(update, context)
+                try:
+                    await finalize_and_save_transaction(update, context)
+                except Exception as ex:
+                    logger.error(f"Errore durante finalizzazione transazione QR: {ex}")
                 return
             elif payment and payment.status in ("CANCELED", "EXPIRED"):
                 logger.info(f"Pagamento QR Satispay {payment_id} terminato con esito: {payment.status}")
@@ -677,7 +692,10 @@ async def wait_for_qr_payment(
                     text=f"⚠️ *Il pagamento Satispay è risultato: {payment.status}.* Procedo con la registrazione della transazione sul foglio...",
                     parse_mode="Markdown"
                 )
-                await finalize_and_save_transaction(update, context)
+                try:
+                    await finalize_and_save_transaction(update, context)
+                except Exception as ex:
+                    logger.error(f"Errore durante finalizzazione transazione QR: {ex}")
                 return
         except Exception as e:
             logger.error(f"Errore durante verifica stato QR {payment_id}: {e}")
