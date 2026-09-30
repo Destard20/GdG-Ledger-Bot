@@ -192,16 +192,41 @@ async def unlink_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def sat_list_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     Mostra l'elenco delle transazioni Satispay per una data specifica (o oggi se omessa).
+    Se non ci sono transazioni nella data, mostra le ultime registrate nel database.
     Uso: /sat_list [GG/MM/AAAA]
     """
-    date_arg = context.args[0] if context.args else datetime.now().strftime("%d/%m/%Y")
+    has_arg = bool(context.args)
+    date_arg = context.args[0] if has_arg else datetime.now().strftime("%d/%m/%Y")
     payments = db_service.get_payments_by_date(date_arg)
+    total_stored = db_service.count_payments()
 
     if not payments:
-        await update.effective_chat.send_message(
-            f"ℹ️ Nessun pagamento Satispay registrato per la data `{date_arg}`.",
-            parse_mode="Markdown"
+        recent = db_service.get_recent_payments(limit=5)
+        if not recent:
+            await update.effective_chat.send_message(
+                f"ℹ️ Il database locale Satispay è attualmente vuoto (nessun pagamento rilevato).",
+                parse_mode="Markdown"
+            )
+            return
+
+        date_desc = f"per la data `{date_arg}`" if has_arg else f"per oggi (`{date_arg}`)"
+        lines = [
+            f"ℹ️ Nessun pagamento Satispay registrato {date_desc}.\n",
+            f"📋 *Ultime transazioni nel database (Totale salvate: {total_stored}):*\n"
+        ]
+        for idx, p in enumerate(recent, start=1):
+            sign = "+" if p.flow != "REFUND" else "-"
+            dt_display = p.insert_date[:16].replace("T", " ") if p.insert_date else ""
+            lines.append(
+                f"{idx}. `{p.id}`\n"
+                f"   💰 *{sign}{p.amount_euro:.2f} €* | 👤 {p.sender_name or 'Anonimo'} | 📅 {dt_display}\n"
+            )
+        lines.append(
+            "💡 *Cerca per data specifica:* `/sat_list <GG/MM/AAAA>`\n"
+            "💡 *Oppure per intervallo:* `/sat_list_range <da> <a>`\n"
+            "💡 *Per richiamare la notifica di un pagamento e collegarlo:* `/sat_get <ID>`"
         )
+        await update.effective_chat.send_message("\n".join(lines), parse_mode="Markdown")
         return
 
     lines = [f"📋 *Transazioni Satispay del {date_arg} ({len(payments)} trovate):*\n"]

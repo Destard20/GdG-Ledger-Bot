@@ -106,7 +106,11 @@ class SatispayService:
                         status=data.get("status", "UNKNOWN"),
                         flow=data.get("flow"),
                         type=data.get("type"),
-                        sender_name=data.get("sender_value") or data.get("consumer_name"),
+                        sender_name=(
+                            (data.get("sender", {}).get("name") if isinstance(data.get("sender"), dict) else None)
+                            or data.get("sender_value")
+                            or data.get("consumer_name")
+                        ),
                         comment=data.get("comment"),
                         insert_date=data.get("insert_date")
                     )
@@ -154,7 +158,11 @@ class SatispayService:
                                 status=item.get("status", "UNKNOWN"),
                                 flow=item.get("flow"),
                                 type=item.get("type"),
-                                sender_name=item.get("sender_value") or item.get("consumer_name"),
+                                sender_name=(
+                                    (item.get("sender", {}).get("name") if isinstance(item.get("sender"), dict) else None)
+                                    or item.get("sender_value")
+                                    or item.get("consumer_name")
+                                ),
                                 comment=item.get("comment"),
                                 insert_date=item.get("insert_date")
                             )

@@ -40,6 +40,8 @@ class DatabaseService:
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 );
             """)
+            # Vista di comodità per interrogazioni dirette su 'payments'
+            conn.execute("CREATE VIEW IF NOT EXISTS payments AS SELECT * FROM satispay_payments;")
             conn.commit()
             logger.info(f"Database SQLite inizializzato in: {self.db_path}")
 
@@ -50,6 +52,12 @@ class DatabaseService:
             count = cursor.fetchone()[0]
             return count == 0
 
+    def count_payments(self) -> int:
+        """Restituisce il numero totale di pagamenti presenti nel database"""
+        with self._get_connection() as conn:
+            cursor = conn.execute("SELECT COUNT(*) FROM satispay_payments;")
+            return cursor.fetchone()[0]
+
     def has_payment(self, payment_id: str) -> bool:
         """Verifica se un pagamento con un dato ID Satispay è già registrato nel DB"""
         with self._get_connection() as conn:
@@ -57,11 +65,17 @@ class DatabaseService:
             return cursor.fetchone() is not None
 
     def save_payment(self, payment: SatispayPayment) -> bool:
-        """Salva una transazione Satispay nel database se non già presente"""
-        if self.has_payment(payment.id):
-            return False
-
+        """Salva una transazione Satispay nel database se non già presente, o ne aggiorna il mittente"""
         with self._get_connection() as conn:
+            cursor = conn.execute("SELECT sender_name FROM satispay_payments WHERE id = ?;", (payment.id,))
+            row = cursor.fetchone()
+            if row:
+                # Se presente ma senza sender_name, aggiornalo
+                if not row["sender_name"] and payment.sender_name:
+                    conn.execute("UPDATE satispay_payments SET sender_name = ? WHERE id = ?;", (payment.sender_name, payment.id))
+                    conn.commit()
+                return False
+
             conn.execute("""
                 INSERT OR IGNORE INTO satispay_payments
                 (id, amount_unit, currency, status, flow, type, sender_name, comment, insert_date)
@@ -78,7 +92,7 @@ class DatabaseService:
                 payment.insert_date or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             ))
             conn.commit()
-            logger.info(f"[SQLite] Salvato pagamento Satispay ID: {payment.id} ({payment.amount_euro:.2f}€)")
+            logger.info(f"[SQLite] Salvato pagamento Satispay ID: {payment.id} ({payment.amount_euro:.2f}€ - {payment.sender_name})")
             return True
 
     def get_payment_by_id(self, payment_id: str) -> Optional[SatispayPayment]:
@@ -89,6 +103,17 @@ class DatabaseService:
             if row:
                 return self._row_to_model(row)
         return None
+
+    def get_recent_payments(self, limit: int = 10) -> List[SatispayPayment]:
+        """Recupera gli ultimi N pagamenti registrati nel database (in ordine decrescente dal più recente)"""
+        with self._get_connection() as conn:
+            cursor = conn.execute("""
+                SELECT * FROM satispay_payments
+                ORDER BY datetime(insert_date) DESC, created_at DESC
+                LIMIT ?;
+            """, (limit,))
+            rows = cursor.fetchall()
+            return [self._row_to_model(r) for r in rows]
 
     @staticmethod
     def _parse_input_date(date_str: str) -> str:
@@ -111,9 +136,10 @@ class DatabaseService:
         with self._get_connection() as conn:
             cursor = conn.execute("""
                 SELECT * FROM satispay_payments
-                WHERE insert_date LIKE ? OR created_at LIKE ?
+                WHERE date(insert_date, 'localtime') = ?
+                   OR insert_date LIKE ?
                 ORDER BY datetime(insert_date) ASC, created_at ASC;
-            """, (f"{norm_date}%", f"{norm_date}%"))
+            """, (norm_date, f"{norm_date}%"))
             rows = cursor.fetchall()
             return [self._row_to_model(r) for r in rows]
 
@@ -122,14 +148,14 @@ class DatabaseService:
         Recupera tutti i pagamenti compresi in un intervallo di date (inclusive).
         Accetta formati come 'DD/MM/YYYY' o 'YYYY-MM-DD'.
         """
-        start_norm = f"{self._parse_input_date(start_date_str)} 00:00:00"
-        end_norm = f"{self._parse_input_date(end_date_str)} 23:59:59"
+        start_norm = self._parse_input_date(start_date_str)
+        end_norm = self._parse_input_date(end_date_str)
 
         with self._get_connection() as conn:
             cursor = conn.execute("""
                 SELECT * FROM satispay_payments
-                WHERE (insert_date BETWEEN ? AND ?)
-                   OR (created_at BETWEEN ? AND ?)
+                WHERE (date(insert_date, 'localtime') BETWEEN ? AND ?)
+                   OR (substr(insert_date, 1, 10) BETWEEN ? AND ?)
                 ORDER BY datetime(insert_date) ASC, created_at ASC;
             """, (start_norm, end_norm, start_norm, end_norm))
             rows = cursor.fetchall()
