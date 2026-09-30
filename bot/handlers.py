@@ -2,18 +2,38 @@ import html
 import json
 import logging
 import re
+from datetime import datetime
 from typing import Optional, Dict
 from telegram import Update
 from telegram.ext import ContextTypes
 from core.security import restricted
-from core.models import CustomCommandConfig
+from core.models import CustomCommandConfig, SatispayPayment
 from services.sheets_service import get_sheets_service
+from services.db_service import db_service
+from services.satispay_service import satispay_service
 
 logger = logging.getLogger(__name__)
 
 SATISPAY_ID_REGEX = re.compile(
     r"(?:ID Satispay:\s*`?([a-zA-Z0-9_\-]+)`?)|(?:`([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})`)"
 )
+
+
+def format_satispay_echo(payment: SatispayPayment) -> str:
+    """Formatta il messaggio di notifica Satispay identico per polling e rievocazione /sat_get"""
+    flow_text = "Ricevuto pagamento da" if payment.flow != "REFUND" else "Rimborso verso"
+    amount_sign = "+" if payment.flow != "REFUND" else "-"
+
+    return (
+        "🔔 *Notifica Pagamento Satispay*\n\n"
+        f"📥 *{flow_text}:* {payment.sender_name or 'Cliente'}\n"
+        f"💰 *Importo:* `{amount_sign}{payment.amount_euro:.2f} €`\n"
+        f"🆔 *ID Satispay:* `{payment.id}`\n"
+        f"📝 *Note:* {payment.comment or 'Nessuna nota'}\n"
+        f"⏰ *Data:* {payment.insert_date or 'Adesso'}\n\n"
+        "💡 *Per associare questa transazione a una riga del registro, "
+        "rispondi a questo messaggio con:*\n`/link <id_transazione>`"
+    )
 
 
 def extract_satispay_id_from_text(text: str) -> Optional[str]:
@@ -57,12 +77,15 @@ async def help_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Il bot ti guiderà passo dopo passo ponendo domande su data, metodo (Contanti o Satispay), "
         "saldo cassa, descrizione, flusso (entrata/uscita), importo e ricevuta.\n"
         f"{custom_text}\n"
-        "🔹 *Integrazione Satispay:*\n"
-        "Quando il bot riceve una notifica di pagamento da Satispay, invia un messaggio in chat.\n"
-        "• *Collegamento:* Rispondi (reply) al messaggio Satispay con `/link <id_transazione>` "
-        "per associare quell'ID Satispay alla transazione nel foglio di calcolo.\n"
-        "• *Scollegamento:* Rispondi con `/unlink` per rimuovere l'ID Satispay da tutte le righe, "
-        "oppure con `/unlink <id_transazione>` per scollegarlo solo da una riga specifica.\n"
+        "🔹 *Integrazione Satispay & Collegamento:*\n"
+        "Il bot controlla periodicamente i pagamenti Satispay e invia una notifica in chat.\n"
+        "• `/link <id_transazione>`: Rispondi al messaggio Satispay per associare quell'ID alla riga nel foglio.\n"
+        "• `/unlink`: Rispondi per rimuovere l'ID Satispay da tutte le righe del foglio.\n"
+        "• `/unlink <id_transazione>`: Rispondi per scollegarlo solo da una riga specifica.\n\n"
+        "🔹 *Storico Satispay:*\n"
+        "• `/sat_list [data]`: Mostra le transazioni Satispay della data (es: `/sat_list 30/09/2026` o oggi se omessa).\n"
+        "• `/sat_list_range <da> <a>`: Mostra le transazioni in un intervallo (es: `/sat_list_range 01/09/2026 30/09/2026`).\n"
+        "• `/sat_get <ID_Satispay>`: Richiama la notifica di un pagamento per poter usare `/link` in qualsiasi momento.\n"
     )
     await update.effective_chat.send_message(help_text, parse_mode="Markdown")
 @restricted
@@ -163,6 +186,111 @@ async def unlink_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"ℹ️ Nessuna corrispondenza trovata nel foglio per l'ID Satispay `{satispay_id}`.",
             parse_mode="Markdown",
         )
+
+
+@restricted
+async def sat_list_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Mostra l'elenco delle transazioni Satispay per una data specifica (o oggi se omessa).
+    Uso: /sat_list [GG/MM/AAAA]
+    """
+    date_arg = context.args[0] if context.args else datetime.now().strftime("%d/%m/%Y")
+    payments = db_service.get_payments_by_date(date_arg)
+
+    if not payments:
+        await update.effective_chat.send_message(
+            f"ℹ️ Nessun pagamento Satispay registrato per la data `{date_arg}`.",
+            parse_mode="Markdown"
+        )
+        return
+
+    lines = [f"📋 *Transazioni Satispay del {date_arg} ({len(payments)} trovate):*\n"]
+    for idx, p in enumerate(payments, start=1):
+        sign = "+" if p.flow != "REFUND" else "-"
+        time_part = p.insert_date.split("T")[-1][:5] if "T" in (p.insert_date or "") else (p.insert_date or "")[-8:-3]
+        lines.append(
+            f"{idx}. `{p.id}`\n"
+            f"   💰 *{sign}{p.amount_euro:.2f} €* | 👤 {p.sender_name or 'Anonimo'} ({time_part})\n"
+        )
+
+    lines.append("💡 *Per richiamare la notifica di un pagamento e collegarlo con /link, usa:*\n`/sat_get <ID_Satispay>`")
+    await update.effective_chat.send_message("\n".join(lines), parse_mode="Markdown")
+
+
+@restricted
+async def sat_list_range_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Mostra l'elenco delle transazioni Satispay in un intervallo di date.
+    Uso: /sat_list_range <data_inizio> <data_fine>
+    Esempio: /sat_list_range 01/09/2026 30/09/2026
+    """
+    if not context.args or len(context.args) < 2:
+        await update.effective_chat.send_message(
+            "⚠️ *Uso del comando:* `/sat_list_range <data_inizio> <data_fine>`\n"
+            "Esempio: `/sat_list_range 01/09/2026 30/09/2026`",
+            parse_mode="Markdown"
+        )
+        return
+
+    start_date = context.args[0]
+    end_date = context.args[1]
+    payments = db_service.get_payments_by_range(start_date, end_date)
+
+    if not payments:
+        await update.effective_chat.send_message(
+            f"ℹ️ Nessun pagamento Satispay registrato tra `{start_date}` e `{end_date}`.",
+            parse_mode="Markdown"
+        )
+        return
+
+    lines = [f"📋 *Transazioni Satispay dal {start_date} al {end_date} ({len(payments)} trovate):*\n"]
+    for idx, p in enumerate(payments[:50], start=1):
+        sign = "+" if p.flow != "REFUND" else "-"
+        date_str = p.insert_date[:16].replace("T", " ") if p.insert_date else ""
+        lines.append(
+            f"{idx}. `{p.id}`\n"
+            f"   💰 *{sign}{p.amount_euro:.2f} €* | 👤 {p.sender_name or 'Anonimo'} | 📅 {date_str}\n"
+        )
+
+    if len(payments) > 50:
+        lines.append(f"_...e altre {len(payments) - 50} transazioni. Riduci l'intervallo per vederle tutte._\n")
+
+    lines.append("💡 *Per richiamare la notifica di un pagamento e collegarlo con /link, usa:*\n`/sat_get <ID_Satispay>`")
+    await update.effective_chat.send_message("\n".join(lines), parse_mode="Markdown")
+
+
+@restricted
+async def sat_get_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Rievoca il messaggio di notifica ufficiale di una transazione Satispay dato il suo ID,
+    permettendo di rispondere direttamente con /link <id_transazione>.
+    Uso: /sat_get <ID_Satispay>
+    """
+    if not context.args:
+        await update.effective_chat.send_message(
+            "⚠️ *Uso del comando:* `/sat_get <ID_Satispay>`\n"
+            "Esempio: `/sat_get 55rdsjb6o99...`",
+            parse_mode="Markdown"
+        )
+        return
+
+    target_id = context.args[0].strip("`").strip()
+    payment = db_service.get_payment_by_id(target_id)
+
+    # Fallback alle API Satispay se non trovato localmente nel database
+    if not payment:
+        payment = await satispay_service.get_payment(target_id)
+
+    if not payment:
+        await update.effective_chat.send_message(
+            f"❌ Nessuna transazione Satispay trovata con ID:\n`{target_id}`",
+            parse_mode="Markdown"
+        )
+        return
+
+    echo_msg = format_satispay_echo(payment)
+    await update.effective_chat.send_message(echo_msg, parse_mode="Markdown")
+
 
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):

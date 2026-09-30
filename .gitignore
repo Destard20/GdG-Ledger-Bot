@@ -50,3 +50,9 @@ htmlcov/
 # Logs
 *.log
 logs/
+
+# SQLite Database
+*.db
+*.sqlite
+*.sqlite3
+

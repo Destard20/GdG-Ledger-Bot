@@ -42,3 +42,45 @@ def test_rsa_key_generation():
     assert "-----END PRIVATE KEY-----" in private_pem
     assert "-----BEGIN PUBLIC KEY-----" in public_pem
     assert "-----END PUBLIC KEY-----" in public_pem
+
+
+import tempfile
+import pytest
+from unittest.mock import AsyncMock
+from core.models import SatispayPayment
+from services.db_service import DatabaseService
+
+
+@pytest.mark.asyncio
+async def test_poll_new_payments_behavior(monkeypatch):
+    service = SatispayService()
+
+    with tempfile.NamedTemporaryFile(suffix=".db") as tmp:
+        test_db = DatabaseService(tmp.name)
+        monkeypatch.setattr("services.db_service.db_service", test_db)
+
+        p1 = SatispayPayment(id="sat_1", amount_unit=1000, status="ACCEPTED", sender_name="User1", insert_date="2026-09-30T10:00:00Z")
+        p2 = SatispayPayment(id="sat_2", amount_unit=2000, status="ACCEPTED", sender_name="User2", insert_date="2026-09-30T10:05:00Z")
+
+        # Mock della chiamata API
+        service.get_payments_history = AsyncMock(return_value=[p2, p1])
+
+        # 1. Primo ciclo: DB vuoto -> sincronizzazione iniziale silenziosa (restituisce [])
+        first_run_new = await service.poll_new_payments()
+        assert first_run_new == []
+        assert test_db.has_payment("sat_1") is True
+        assert test_db.has_payment("sat_2") is True
+
+        # 2. Secondo ciclo: nessun nuovo pagamento -> restituisce []
+        second_run_new = await service.poll_new_payments()
+        assert second_run_new == []
+
+        # 3. Terzo ciclo: arriva p3 -> rileva e restituisce [p3]
+        p3 = SatispayPayment(id="sat_3", amount_unit=3000, status="ACCEPTED", sender_name="User3", insert_date="2026-09-30T10:10:00Z")
+        service.get_payments_history = AsyncMock(return_value=[p3, p2, p1])
+
+        third_run_new = await service.poll_new_payments()
+        assert len(third_run_new) == 1
+        assert third_run_new[0].id == "sat_3"
+        assert test_db.has_payment("sat_3") is True
+

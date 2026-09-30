@@ -1,9 +1,10 @@
+import tempfile
 import pytest
-from httpx import AsyncClient, ASGITransport
 from config import settings
 from core.security import is_chat_allowed
-from bot.handlers import extract_satispay_id_from_text
-from main import api_app
+from core.models import SatispayPayment
+from bot.handlers import extract_satispay_id_from_text, format_satispay_echo
+from services.db_service import DatabaseService
 
 
 def test_is_chat_allowed():
@@ -31,25 +32,68 @@ def test_extract_satispay_id_from_text():
     assert extract_satispay_id_from_text(sample_no_id) is None
 
 
-@pytest.mark.asyncio
-async def test_api_health_endpoint():
-    transport = ASGITransport(app=api_app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
-        response = await client.get("/health")
-        assert response.status_code == 200
-        assert response.json() == {"status": "ok", "service": "GdG-Ledger-Bot"}
+def test_format_satispay_echo():
+    payment = SatispayPayment(
+        id="sat-test-echo",
+        amount_unit=2000,
+        currency="EUR",
+        status="ACCEPTED",
+        flow="MATCH_CODE",
+        sender_name="Paolo Neri",
+        comment="Quota 2026",
+        insert_date="2026-09-30 11:00:00"
+    )
+    msg = format_satispay_echo(payment)
+    assert "sat-test-echo" in msg
+    assert "+20.00 €" in msg
+    assert "Paolo Neri" in msg
+    assert "/link <id_transazione>" in msg
 
 
-@pytest.mark.asyncio
-async def test_api_satispay_test_endpoint():
-    transport = ASGITransport(app=api_app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
-        response = await client.post("/webhook/satispay/test?amount=12.5&sender=Luigi")
-        assert response.status_code == 200
-        data = response.json()
-        assert data["status"] == "simulated"
-        assert data["payment"]["amount_unit"] == 1250
-        assert data["payment"]["sender_name"] == "Luigi"
+def test_db_service_date_and_range_filtering():
+    with tempfile.NamedTemporaryFile(suffix=".db") as tmp:
+        db = DatabaseService(tmp.name)
+        assert db.is_empty() is True
+
+        p1 = SatispayPayment(
+            id="sat_day1",
+            amount_unit=1000,
+            status="ACCEPTED",
+            sender_name="User1",
+            insert_date="2026-09-15 10:00:00"
+        )
+        p2 = SatispayPayment(
+            id="sat_day2",
+            amount_unit=2500,
+            status="ACCEPTED",
+            sender_name="User2",
+            insert_date="2026-09-20 15:30:00"
+        )
+        p3 = SatispayPayment(
+            id="sat_day3",
+            amount_unit=500,
+            status="ACCEPTED",
+            sender_name="User3",
+            insert_date="2026-09-20 18:00:00"
+        )
+
+        db.save_payment(p1)
+        db.save_payment(p2)
+        db.save_payment(p3)
+
+        assert db.is_empty() is False
+
+        # Query per data singola
+        day_results = db.get_payments_by_date("20/09/2026")
+        assert len(day_results) == 2
+        assert {p.id for p in day_results} == {"sat_day2", "sat_day3"}
+
+        # Query per range di date
+        range_results = db.get_payments_by_range("10/09/2026", "25/09/2026")
+        assert len(range_results) == 3
+
+        range_narrow = db.get_payments_by_range("19/09/2026", "21/09/2026")
+        assert len(range_narrow) == 2
 
 
 def test_get_user_mention():
@@ -74,4 +118,5 @@ def test_get_user_mention():
     update_none = MagicMock()
     update_none.effective_user = None
     assert get_user_mention(update_none) == ""
+
 

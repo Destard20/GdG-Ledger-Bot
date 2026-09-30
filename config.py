@@ -28,10 +28,9 @@ class Settings(BaseSettings):
     SATISPAY_PRIVATE_KEY_FILE: str = "satispay_private.pem"
     SATISPAY_STAGING: bool = False
 
-    # Webhook
-    WEBHOOK_HOST: str = "0.0.0.0"
-    WEBHOOK_PORT: int = 8000
-    WEBHOOK_SECRET: Optional[str] = None
+    # Satispay Polling & Database
+    SATISPAY_POLL_INTERVAL: int = 10  # Intervallo polling in secondi
+    SQLITE_DB_PATH: str = "satispay_history.db"
 
     # Custom Commands
     CUSTOM_COMMANDS_DIR: str = "custom_commands"

@@ -3,7 +3,7 @@ import email.utils
 import hashlib
 import json
 import logging
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 import httpx
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
@@ -116,6 +116,86 @@ class SatispayService:
         except Exception as e:
             logger.error(f"Eccezione durante chiamata Satispay: {e}")
             return None
+
+    async def get_payments_history(self, limit: int = 50) -> List[SatispayPayment]:
+        """
+        Recupera la lista degli ultimi pagamenti dalle API di Satispay
+        """
+        path = f"/g_business/v1/payments?limit={limit}"
+        headers = {
+            "Accept": "application/json",
+            "Content-Type": "application/json"
+        }
+
+        if self.private_key and self.key_id:
+            auth_headers = self.generate_auth_header("GET", path)
+            headers.update(auth_headers)
+        else:
+            return []
+
+        url = f"{self.base_url}{path}"
+        try:
+            async with httpx.AsyncClient() as client:
+                res = await client.get(url, headers=headers, timeout=10.0)
+                if res.status_code == 200:
+                    data = res.json()
+                    items = (
+                        data.get("data")
+                        or data.get("list")
+                        or (data if isinstance(data, list) else [])
+                    )
+                    payments: List[SatispayPayment] = []
+                    for item in items:
+                        payments.append(
+                            SatispayPayment(
+                                id=item.get("id"),
+                                amount_unit=item.get("amount_unit", 0),
+                                currency=item.get("currency", "EUR"),
+                                status=item.get("status", "UNKNOWN"),
+                                flow=item.get("flow"),
+                                type=item.get("type"),
+                                sender_name=item.get("sender_value") or item.get("consumer_name"),
+                                comment=item.get("comment"),
+                                insert_date=item.get("insert_date")
+                            )
+                        )
+                    return payments
+                else:
+                    logger.error(f"Errore chiamata Satispay GET payments ({res.status_code}): {res.text}")
+                    return []
+        except Exception as e:
+            logger.error(f"Eccezione durante recupero storico Satispay: {e}")
+            return []
+
+    async def poll_new_payments(self) -> List[SatispayPayment]:
+        """
+        Esegue il polling dei pagamenti:
+        - Al primo avvio (se DB locale vuoto), sincronizza silenziosamente lo storico senza inviare notifiche.
+        - Negli avvii successivi, qualsiasi pagamento non presente nel DB locale viene considerato nuovo,
+          salvato in SQLite e restituito per l'invio della notifica su Telegram.
+        """
+        from services.db_service import db_service
+
+        payments = await self.get_payments_history(limit=50)
+        if not payments:
+            return []
+
+        # Se il database è completamente vuoto, popoliamo lo storico silenziosamente
+        if db_service.is_empty():
+            logger.info(f"[Satispay Polling] Primo avvio rilevato. Sincronizzazione iniziale silenziosa di {len(payments)} pagamenti...")
+            for p in payments:
+                db_service.save_payment(p)
+            return []
+
+        new_payments: List[SatispayPayment] = []
+        # Ordiniamo dal più vecchio al più recente per inviare le notifiche in ordine cronologico
+        for p in reversed(payments):
+            if not db_service.has_payment(p.id):
+                db_service.save_payment(p)
+                new_payments.append(p)
+                logger.info(f"[Satispay Polling] Rilevato nuovo pagamento ID: {p.id} ({p.amount_euro:.2f}€ da {p.sender_name})")
+
+        return new_payments
 
     def parse_webhook_payload(self, raw_data: Dict[str, Any]) -> SatispayPayment:
         """

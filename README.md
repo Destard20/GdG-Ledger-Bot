@@ -22,10 +22,16 @@ Telegram Bot professionale per la tenuta del registro contabile (Ledger), gestio
   * Auto-sanitizzazione dell'ID: supporta sia l'ID pulito che l'URL completo di Google Drive.
   * Supporto a fogli multipli nella stessa cartella di lavoro (tab specificabile da `.env`).
   * Modalità Mock locale (`USE_MOCK_SHEETS=true`) per test immediati anche senza credenziali Google configurate.
-* **Integrazione Satispay Business**:
-  * Server Webhook integrato (FastAPI) per ricevere notifiche di pagamento in tempo reale ed inviare un *echo* nella chat Telegram.
-  * Associazione transazione: rispondi a un messaggio Satispay con `/link <id_transazione>` per salvare l'ID Satispay nella colonna del foglio.
-  * Scollegamento: rispondi con `/unlink` (scollega da tutte le transazioni) o `/unlink <id_transazione>`.
+* **Integrazione Satispay Business 100% Autonoma (Polling + SQLite)**:
+  * **Nessun Webhook, porta aperta o Cloudflare Tunnel**: il bot interroga periodicamente le API di Satispay in background tramite `JobQueue` interna.
+  * **Persistenza Locale su SQLite (`satispay_history.db`)**: memorizza i pagamenti ricevuti. Al riavvio del bot, recupera automaticamente qualsiasi transazione avvenuta a PC spento (Offline Catch-up) senza duplicare notifiche.
+  * **Comandi Storico Satispay**:
+    * `/sat_list [data]` (alias `/sl`): visualizza l'elenco delle transazioni di una data (es: `/sat_list 30/09/2026` o oggi se omessa).
+    * `/sat_list_range <da> <a>` (alias `/slr`): visualizza le transazioni in un intervallo di date (es: `/sat_list_range 01/09/2026 30/09/2026`).
+    * `/sat_get <ID_Satispay>` (alias `/sg`): rievoca la notifica ufficiale di una transazione, permettendo di collegarla con `/link` in qualsiasi momento.
+  * **Associazione e Scollegamento**:
+    * `/link <id_transazione>`: rispondi a un messaggio Satispay per associare l'ID Satispay alla riga corrispondente nel foglio di calcolo.
+    * `/unlink`: rispondi per rimuovere l'ID Satispay da tutte le righe del foglio (o `/unlink <id_transazione>`).
 * **Macro e Comandi Personalizzati Dinamici**:
   * Cartella dedicata `custom_commands/`: aggiungi file `.yaml` per creare macro rapide (es. `/i`, `/bb`).
   * Registrazione automatica all'avvio nel menu dei comandi Telegram tramite `setMyCommands`.
@@ -33,7 +39,7 @@ Telegram Bot professionale per la tenuta del registro contabile (Ledger), gestio
 * **Logging di Sessione & Spegnimento Pulito**:
   * Generazione automatica di file di log dedicati in `logs/` con timestamp di avvio (es. `logs/bot_YYYYMMDD_HHMMSS.log`).
   * Tracciamento dettagliato su file e console di ogni operazione di scrittura sul foglio di calcolo.
-  * Chiusura aggraziata (graceful shutdown) tramite FastAPI lifespan senza errori su `Ctrl+C`.
+  * Arresto pulito e nativo gestito da `python-telegram-bot` (`Ctrl+C`).
 
 ---
 
@@ -44,14 +50,15 @@ GdG-Ledger-Bot/
 ├── bot/
 │   ├── conversation.py        # Flusso interattivo /write e gestione comandi custom
 │   ├── custom_commands.py     # Loader file YAML e generatore comandi Telegram
-│   ├── handlers.py            # /start, /help, /link, /unlink ed error handling
+│   ├── handlers.py            # /start, /help, /link, /unlink, /sat_list, /sat_get
 │   └── keyboards.py           # Inline Keyboards e bottoni interattivi
 ├── core/
 │   ├── models.py              # Modelli dati Pydantic (Transaction, CustomCommand, SatispayPayment)
 │   └── security.py            # Decoratori e filtri di autorizzazione chat
 ├── services/
+│   ├── db_service.py          # Database SQLite locale per storico pagamenti Satispay
 │   ├── sheets_service.py      # Servizio Google Sheets (gspread) e Mock locale
-│   └── satispay_service.py    # Client API Satispay con HTTP Signatures crittografiche
+│   └── satispay_service.py    # Client Satispay con HTTP Signatures e Polling
 ├── custom_commands/           # Cartella con le definizioni YAML dei comandi custom
 │   ├── iscrizione.yaml
 │   └── iscrizione_bayblade.yaml
@@ -64,10 +71,9 @@ GdG-Ledger-Bot/
 │   └── test_sheets_service.py
 ├── .env.example               # Template variabili d'ambiente (senza segreti)
 ├── .GEMINI.md                 # Guida dettagliata per ottenere credenziali API Google e Satispay
-├── main.py                    # Entry point: avvia Telegram Bot e Webhook FastAPI
+├── main.py                    # Entry point: avvia Telegram Bot e JobQueue Satispay Polling
 ├── requirements.txt           # Dipendenze Python
-├── satispay_setup.py          # Script interattivo per generazione chiavi RSA e scambio KeyID
-└── start_tunnel.sh            # Script per avvio automatico Cloudflare Tunnel
+└── satispay_setup.py          # Script interattivo per generazione chiavi RSA e scambio KeyID
 ```
 ---
 
@@ -104,18 +110,11 @@ Puoi verificare l'integrità dell'intero progetto eseguendo:
 pytest -v
 ```
 
-### 5. Avvio del Bot e del Server Webhook
+### 5. Avvio del Bot
 ```bash
 python main.py
 ```
-
-### 6. Esposizione Webhook per Satispay (PC Locale)
-In un altro terminale, avvia lo script del tunnel Cloudflare per ottenere un indirizzo HTTPS pubblico:
-```bash
-./start_tunnel.sh
-```
-Copia l'URL generato (es: `https://xxxx.trycloudflare.com`) e imposta su Satispay il Webhook URL:
-`https://xxxx.trycloudflare.com/webhook/satispay`
+Il bot è ora attivo e completamente autonomo! Non serve avviare nessun tunnel, porta o server web esterno: il polling periodico di Satispay e la gestione dei comandi Telegram sono interamente orchestrati dal processo principale.
 
 ---
 

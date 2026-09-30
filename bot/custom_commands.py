@@ -72,6 +72,9 @@ def build_bot_commands_list(custom_commands: Dict[str, CustomCommandConfig]) -> 
     commands = [
         BotCommand("write", "Registra nuova transazione nel foglio"),
         BotCommand("w", "Scorciatoia per /write"),
+        BotCommand("sat_list", "Elenco transazioni Satispay per data"),
+        BotCommand("sat_list_range", "Elenco transazioni Satispay per intervallo"),
+        BotCommand("sat_get", "Richiama notifica Satispay dato ID"),
         BotCommand("cancel", "Annulla operazione in corso"),
         BotCommand("help", "Mostra istruzioni e comandi disponibili"),
     ]
